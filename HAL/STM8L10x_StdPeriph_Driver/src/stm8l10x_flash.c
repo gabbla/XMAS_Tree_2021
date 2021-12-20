@@ -116,10 +116,91 @@
 #define FLASH_SET_BYTE     ((uint8_t)0xFF);
 #define OPERATION_TIMEOUT  ((uint16_t)0x1000)
 /* Private macro -------------------------------------------------------------*/
+
+/* SDCC patch: simplify sdcc && >64kB indicator over different SPLs */
+#if defined(_SDCC_BIGMEM_)
+  #undef  MemoryAddressCast
+  #define MemoryAddressCast uint32_t
+#else
+  #undef  MemoryAddressCast
+  #define MemoryAddressCast uint16_t
+#endif
+
 /* Private variables ---------------------------------------------------------*/
+
+/* SDCC patch: for >64kB to pass data to/from inline ASM (SDCC doesn't support far pointers yet) */
+#if defined(_SDCC_BIGMEM_)     
+  uint32_t    asm_addr;      // 16b/24b address
+  uint8_t     asm_val;       // 1B data for r/w data
+#endif // _SDCC_BIGMEM_
+
 /* Private Constants ---------------------------------------------------------*/
 /* Private function prototypes -----------------------------------------------*/
+
+/* SDCC patch: r/w helper routines for >64kB addresses (SDCC doesn't support far pointers yet) */
+#if defined (_SDCC_BIGMEM_)
+  void      write_byte_address(uint32_t Address, uint8_t Data);   // write single byte to 16b/24b address
+  uint8_t   read_byte_address(uint32_t Address);                  // read single byte from 16b/24b address
+#endif // _SDCC_BIGMEM_
+
 /* Private functions ---------------------------------------------------------*/
+ 
+/* SDCC patch: r/w helper routines for >64kB addresses using inline ASM (SDCC doesn't support far pointers yet) */
+/** @addtogroup FLASH_Helper_functions
+  * @{
+  */
+
+#if defined (_SDCC_BIGMEM_)
+/**
+  * @brief  write single byte to address
+  * @note   is required for >64kB memory space and SDCC, which doesn't yet support far pointers
+  * @param  Address : address to write to
+  *         Data :    value to write
+  * @retval None
+  */
+void write_byte_address(uint32_t Address, uint8_t Data)
+{
+  /* store address & data globally for assember */
+  asm_addr = Address;
+  asm_val  = Data;
+
+  /* use inline assembler to write to 16b/24b address */
+__asm
+  ld	a,_asm_val
+  ldf	[_asm_addr+1].e,a
+__endasm;
+
+}
+
+
+/**
+  * @brief  Reads any byte from flash memory
+  * @note   is required for >64kB memory space and SDCC, which doesn't yet support far pointers
+  * @param  Address : address to read
+  * @retval value read
+  */
+uint8_t read_byte_address(uint32_t Address)
+{
+  /* store address globally for assember */
+  asm_addr = Address;
+
+  /* use inline assembler to read from 16b/24b address */
+__asm
+  ldf	a,[_asm_addr+1].e
+  ld	_asm_val,a
+__endasm;
+
+  /* return read byte */
+  return(asm_val);
+  
+}
+
+#endif // _SDCC_BIGMEM_
+
+/**
+  * @}
+  */
+  
 
 /** @defgroup FLASH_Private_Functions
   * @{
@@ -274,7 +355,13 @@ void FLASH_ProgramByte(uint16_t Address, uint8_t Data)
   /* Check parameters */
   assert_param(IS_FLASH_ADDRESS(Address));
 
-  *(PointerAttr uint8_t*) (uint16_t)Address = Data;  
+  /* Program byte */
+  /* SDCC patch: SDCC requires helper routines for >64kB addresses due to lack of far pointers */
+  #ifndef _SDCC_BIGMEM_
+    *(PointerAttr uint8_t*) (MemoryAddressCast)Address = Data;
+  #else
+    write_byte_address((MemoryAddressCast) Address, Data);
+  #endif // _SDCC_BIGMEM_
 }
 
 /**
@@ -286,8 +373,14 @@ void FLASH_EraseByte(uint16_t Address)
 {
   /* Check parameter */
   assert_param(IS_FLASH_ADDRESS(Address));
-
-  *(PointerAttr uint8_t*) (uint16_t)Address = FLASH_CLEAR_BYTE; /* Erase byte */
+  
+  /* Erase byte */
+  /* SDCC patch: SDCC requires helper routines for >64kB addresses due to lack of far pointers */
+  #ifndef _SDCC_BIGMEM_
+    *(PointerAttr uint8_t*) (MemoryAddressCast)Address = FLASH_CLEAR_BYTE;
+  #else
+    write_byte_address((MemoryAddressCast) Address, FLASH_CLEAR_BYTE);
+  #endif // _SDCC_BIGMEM_
 }
 
 /**
@@ -304,14 +397,22 @@ void FLASH_ProgramWord(uint16_t Address, uint32_t Data)
   /* Enable Word Write Once */
   FLASH->CR2 |= FLASH_CR2_WPRG;
   
-  /* Write one byte - from lowest address*/
-  *((PointerAttr uint8_t*)(uint16_t)Address)       = *((uint8_t*)(&Data));   
-  /* Write one byte*/
-  *(((PointerAttr uint8_t*)(uint16_t)Address) + 1) = *((uint8_t*)(&Data) + 1);
-  /* Write one byte*/
-  *(((PointerAttr uint8_t*)(uint16_t)Address) + 2) = *((uint8_t*)(&Data) + 2); 
-  /* Write one byte - from higher address*/
-  *(((PointerAttr uint8_t*)(uint16_t)Address) + 3) = *((uint8_t*)(&Data) + 3); 
+  /* SDCC patch: SDCC requires helper routines for >64kB addresses due to lack of far pointers */
+  #ifndef _SDCC_BIGMEM_
+    /* Write one byte - from lowest address*/
+    *((PointerAttr uint8_t*)(MemoryAddressCast)Address)       = *((uint8_t*)(&Data));
+    /* Write one byte*/
+    *(((PointerAttr uint8_t*)(MemoryAddressCast)Address) + 1) = *((uint8_t*)(&Data)+1); 
+    /* Write one byte*/    
+    *(((PointerAttr uint8_t*)(MemoryAddressCast)Address) + 2) = *((uint8_t*)(&Data)+2); 
+    /* Write one byte - from higher address*/
+    *(((PointerAttr uint8_t*)(MemoryAddressCast)Address) + 3) = *((uint8_t*)(&Data)+3); 
+  #else
+    write_byte_address((MemoryAddressCast) (Address    ), *((uint8_t*)(&Data)));
+    write_byte_address((MemoryAddressCast) (Address + 1), *((uint8_t*)(&Data)+1));
+    write_byte_address((MemoryAddressCast) (Address + 2), *((uint8_t*)(&Data)+2));
+    write_byte_address((MemoryAddressCast) (Address + 3), *((uint8_t*)(&Data)+3));
+  #endif // _SDCC_BIGMEM_
 }
 
 /**
@@ -324,8 +425,13 @@ uint8_t FLASH_ReadByte(uint16_t Address)
   /* Check parameter */
   assert_param(IS_FLASH_ADDRESS(Address));
   
-  /* Read byte */  
-  return(*(PointerAttr uint8_t *) (uint16_t)Address);
+  /* Read byte */
+  /* SDCC patch: SDCC requires helper routines for >64kB addresses due to lack of far pointers */
+  #ifndef _SDCC_BIGMEM_
+    return(*(PointerAttr uint8_t *) (MemoryAddressCast)Address); 
+  #else
+    return(read_byte_address((MemoryAddressCast) Address));
+  #endif // _SDCC_BIGMEM_
 }
 /**
   * @}
@@ -583,6 +689,11 @@ FlagStatus FLASH_GetFlagStatus(FLASH_FLAG_TypeDef FLASH_FLAG)
   * in the stm8l10x.h file or define it in your toolchain compiler preprocessor
   *   #define RAM_EXECUTION  (1) 
   */
+
+/* SDCC patch: code in RAM not yet patched */
+#if defined (_SDCC_) && defined (RAM_EXECUTION)
+ #error RAM execution not yet implemented in patch, comment RAM_EXECUTION in stm8s.h
+#endif
 
 #if defined (_COSMIC_) && defined (RAM_EXECUTION)
  #pragma section (FLASH_CODE)
