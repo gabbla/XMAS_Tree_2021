@@ -101,3 +101,6 @@ Backup*
 #IAR STUFF
 Debug/
 settings/
+
+# SDCC build dir
+output/
